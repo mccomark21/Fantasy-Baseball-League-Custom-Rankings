@@ -89,6 +89,8 @@ Token stored in config/yahoo_token.json
 User can now access leagues
 ```
 
+For local manual validation, use `tests/manual/oauth_smoke.py` to confirm credentials and token storage, or `tests/manual/yahoo_league_runner.py` for a guided league/player sample flow. Both rely on the backend's existing `http://localhost:8000/oauth/callback` route.
+
 ### Daily Data Refresh (Scheduled)
 ```
 APScheduler triggers at 1:00 AM
@@ -127,7 +129,7 @@ Frontend renders table
 ## Core Components
 
 ### 1. Configuration Management (`config.py`)
-Reads environment variables from `.env` file:
+Reads environment variables from the project root `.env` file:
 - Yahoo OAuth credentials (ID, Secret, Redirect URI)
 - Baseball Savant API key
 - App settings (environment, log level)
@@ -143,8 +145,9 @@ Reads environment variables from `.env` file:
 - `exchange_code_for_token(code)`: Exchange OAuth code for access token
 - `refresh_access_token()`: Refresh expired token
 - `get_access_token()`: Get valid token (refresh if needed)
-- `get_leagues()`: Fetch user's leagues (TODO: XML parsing)
-- `get_league_roster(league_id)`: Fetch roster for league (TODO: XML parsing)
+- `get_leagues()`: Fetch the user's 2026-capable MLB leagues via Yahoo XML parsing
+- `get_league_players_with_ownership(league_id, count, start)`: Fetch a paged league player sample with MLB team and fantasy ownership status
+- `get_league_roster(league_id)`: Convenience wrapper that returns a 25-player ownership sample
 
 **Token Storage**: `config/yahoo_token.json` (includes expiration time)
 
@@ -200,7 +203,14 @@ Reads environment variables from `.env` file:
 | `/api/calculate-rankings` | POST | Calculate rankings from custom stats |
 | `/api/config` | GET | Get default config |
 
-### 6. Plotly Dash Frontend
+### 6. Testing And Support Utilities
+- `tests/test_yahoo_oauth.py`: Unit coverage for Yahoo XML parsing, token handling, and ownership parsing
+- `tests/test_league_data_integration.py`: Live Yahoo integration coverage with 2026 league discovery and player ownership samples
+- `tests/manual/oauth_smoke.py`: Manual credential and token-storage verification
+- `tests/manual/yahoo_league_runner.py`: Guided end-to-end Yahoo authorization and league/player sampling
+- `docs/YAHOO_OAUTH_SETUP.md` and `docs/yahoo-league-testing.md`: Setup and testing workflows
+
+### 7. Plotly Dash Frontend
 **Layout Components** (`layouts.py`):
 - Header with title
 - League selector dropdown

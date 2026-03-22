@@ -2,10 +2,13 @@
 Configuration management for Fantasy Baseball Ranking application
 """
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from the project root .env file.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(PROJECT_ROOT / ".env")
 
 
 class Config:

@@ -13,6 +13,7 @@ import logging
 from src.backend.config import config
 from src.backend.metrics import calculate_rankings, MetricsCalculator
 from src.backend.yahoo_oauth import YahooOAuthManager
+from src.backend.cache import DataCache, LeagueCacheManager
 
 # Configure logging
 logging.basicConfig(level=config.LOG_LEVEL)
@@ -36,6 +37,8 @@ app.add_middleware(
 
 # Initialize managers
 oauth_manager = YahooOAuthManager()
+cache = DataCache(config.DATA_DIR)
+league_cache = LeagueCacheManager(cache)
 
 
 # ============================================================================
@@ -89,15 +92,26 @@ async def get_leagues():
         if not oauth_manager.is_token_valid():
             raise HTTPException(status_code=401, detail="Not authorized. Please login first.")
         
-        # Load cached leagues or fetch from Yahoo
-        leagues_file = os.path.join(config.DATA_DIR, "leagues.json")
-        if os.path.exists(leagues_file):
-            with open(leagues_file, "r") as f:
-                leagues = json.load(f)
-            return {"status": "success", "leagues": leagues}
+        # Fetch leagues from Yahoo (or use cache if fresh)
+        def fetch_leagues():
+            leagues = oauth_manager.get_leagues()
+            if leagues is None:
+                raise Exception("Failed to fetch leagues from Yahoo")
+            return leagues
         
-        # TODO: Fetch from Yahoo API and cache
-        return {"status": "success", "leagues": []}
+        leagues = cache.get_or_load(
+            "leagues",
+            fetch_leagues,
+            max_age_hours=24
+        )
+        
+        if not leagues:
+            raise HTTPException(status_code=500, detail="Failed to fetch leagues")
+        
+        logger.info(f"Returning {len(leagues)} leagues")
+        return {"status": "success", "leagues": leagues}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching leagues: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -115,14 +129,30 @@ async def get_roster(league_id: str):
         List of players in the league
     """
     try:
-        roster_file = os.path.join(config.DATA_DIR, f"roster_{league_id}.json")
-        if os.path.exists(roster_file):
-            with open(roster_file, "r") as f:
-                roster = json.load(f)
-            return {"status": "success", "roster": roster}
+        # Check if authorized
+        if not oauth_manager.is_token_valid():
+            raise HTTPException(status_code=401, detail="Not authorized. Please login first.")
         
-        # TODO: Fetch from Yahoo API and cache
-        return {"status": "success", "roster": []}
+        # Fetch roster from Yahoo (or use cache if fresh)
+        def fetch_roster():
+            roster = oauth_manager.get_league_roster(league_id)
+            if roster is None:
+                raise Exception("Failed to fetch roster from Yahoo")
+            return roster
+        
+        roster = cache.get_or_load(
+            f"roster_{league_id}",
+            fetch_roster,
+            max_age_hours=24
+        )
+        
+        if not roster:
+            raise HTTPException(status_code=500, detail="Failed to fetch roster")
+        
+        logger.info(f"Returning roster for league {league_id} with {len(roster)} players")
+        return {"status": "success", "league_id": league_id, "roster": roster}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching roster: {e}")
         raise HTTPException(status_code=500, detail=str(e))

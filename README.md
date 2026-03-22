@@ -66,9 +66,9 @@ pip install -r requirements.txt
 
 ### Step 2: Configure Environment
 
-1. Copy `config/.env.example` to `config/.env`:
+1. Copy `config/.env.example` to `.env`:
    ```bash
-   cp config/.env.example config/.env
+   cp config/.env.example .env
    ```
 
 2. Register your app with Yahoo Fantasy Developers:
@@ -81,10 +81,11 @@ pip install -r requirements.txt
    - Visit https://baseballsavant.mlb.com
    - Request API access for your use case
 
-4. Update `config/.env` with your credentials:
+4. Update `.env` with your credentials:
    ```
    YAHOO_CLIENT_ID=your_client_id
    YAHOO_CLIENT_SECRET=your_client_secret
+   YAHOO_REDIRECT_URI=http://localhost:8000/oauth/callback
    SAVANT_API_KEY=your_api_key
    ```
 
@@ -162,10 +163,18 @@ Run unit tests for metrics calculations:
 pytest tests/test_metrics.py -v
 ```
 
-Run integration tests for API endpoints:
+Run Yahoo integration tests, including a 2026 player ownership sample:
 ```bash
-pytest tests/test_api.py -v
+pytest tests/test_league_data_integration.py -v -s
 ```
+
+Manual Yahoo/OAuth helper scripts live in `tests/manual/`:
+```bash
+python tests/manual/oauth_smoke.py
+python tests/manual/yahoo_league_runner.py
+```
+
+The FastAPI backend already serves the Yahoo callback at `http://localhost:8000/oauth/callback`, so no separate callback server is needed for local testing.
 
 ## Future Enhancements
 
