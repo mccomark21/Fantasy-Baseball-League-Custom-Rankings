@@ -182,6 +182,26 @@ class TestCalculateRankingsPipeline:
         # Check data is ranked
         assert result.loc[0, "rank"] == 1
         assert len(result) == 3
+
+    def test_full_pipeline_preserves_raw_metrics_alongside_z_scores(self, sample_stats_df):
+        """Test raw metrics remain available after z-score generation."""
+        result = calculate_rankings(sample_stats_df)
+
+        for column in ["xwOBA", "Pull Air %", "BB:K", "SB per PA"]:
+            assert column in result.columns
+            assert f"{column}_zscore" in result.columns
+
+    def test_full_pipeline_preserves_counting_stats(self, sample_stats_df):
+        """Test counting stats remain available for table display."""
+        enriched_df = sample_stats_df.assign(
+            plate_appearances=[25, 22, 19],
+            batted_ball_events=[11, 9, 8],
+        )
+
+        result = calculate_rankings(enriched_df)
+
+        assert "plate_appearances" in result.columns
+        assert "batted_ball_events" in result.columns
     
     def test_custom_weights(self, sample_stats_df):
         """Test ranking calculation with custom weights"""
