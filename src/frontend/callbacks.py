@@ -1,12 +1,144 @@
-"""
-Plotly Dash callback functions
-Handles user interactions and data updates in the dashboard
-"""
-from dash import Input, Output, State, callback, ctx, html
+"""Plotly Dash callback functions."""
+from dash import Input, Output, State, callback, ctx, html, no_update
+from dash.dash_table.Format import Format, Scheme
 import requests
 from datetime import datetime, timedelta
 import pandas as pd
 import json
+
+
+RAW_METRIC_COLUMNS = ["plate_appearances", "batted_ball_events", "xwOBA", "Pull Air %", "BB:K", "SB per PA"]
+RAW_SECTION_COLUMNS = ["plate_appearances", "batted_ball_events", "xwOBA", "Pull Air %", "BB:K", "SB per PA"]
+Z_SCORE_SECTION_COLUMNS = ["xwOBA_zscore", "Pull Air %_zscore", "BB:K_zscore", "SB per PA_zscore"]
+COLUMN_LABELS = {
+    "rank": "Rank",
+    "player_name": "Player",
+    "fantasy_status": "Fantasy Team / Status",
+    "position": "Pos",
+    "mlb_team": "MLB",
+    "plate_appearances": "PA",
+    "batted_ball_events": "BBE",
+    "xwOBA": "xwOBA",
+    "xwOBA_zscore": "xwOBA Z",
+    "Pull Air %": "Pull Air %",
+    "Pull Air %_zscore": "Pull Air % Z",
+    "BB:K": "BB:K",
+    "BB:K_zscore": "BB:K Z",
+    "SB per PA": "SB per PA",
+    "SB per PA_zscore": "SB per PA Z",
+    "composite_score": "Composite",
+    "data_status": "Data Status",
+    "match_status": "Match Status",
+    "review_reason": "Review Reason",
+}
+THEME_TABLE_STYLES = {
+    "dark": {
+        "cell": {
+            "textAlign": "left",
+            "whiteSpace": "normal",
+            "height": "auto",
+            "backgroundColor": "rgba(8, 14, 26, 0.76)",
+            "color": "#edf4ff",
+            "border": "1px solid rgba(148, 163, 184, 0.16)",
+            "padding": "10px",
+        },
+        "header": {
+            "backgroundColor": "rgba(19, 31, 51, 0.95)",
+            "color": "#edf4ff",
+            "fontWeight": "bold",
+            "border": "1px solid rgba(148, 163, 184, 0.22)",
+        },
+        "odd": "rgba(255, 255, 255, 0.03)",
+    },
+    "light": {
+        "cell": {
+            "textAlign": "left",
+            "whiteSpace": "normal",
+            "height": "auto",
+            "backgroundColor": "rgba(255, 255, 255, 0.96)",
+            "color": "#132033",
+            "border": "1px solid rgba(15, 23, 42, 0.08)",
+            "padding": "10px",
+        },
+        "header": {
+            "backgroundColor": "rgba(226, 236, 247, 0.96)",
+            "color": "#132033",
+            "fontWeight": "bold",
+            "border": "1px solid rgba(15, 23, 42, 0.12)",
+        },
+        "odd": "rgba(15, 23, 42, 0.03)",
+    },
+}
+
+
+def _parse_iso_date(value):
+    if not value:
+        return None
+    return datetime.fromisoformat(str(value)[:10])
+
+
+def _resolve_reference_end(current_end_date):
+    return _parse_iso_date(current_end_date) or (datetime.now() - timedelta(days=1))
+
+
+def _build_z_score_tier_styles(df):
+    tier_colors = ["#8f2720", "#c96a62", "rgba(255, 255, 255, 0.04)", "#58aa78", "#1f7a49"]
+    styles = []
+
+    for column in Z_SCORE_SECTION_COLUMNS:
+        if column not in df.columns:
+            continue
+
+        styles.extend([
+            {
+                "if": {"column_id": column, "filter_query": f"{{{column}}} <= -1.5"},
+                "backgroundColor": tier_colors[0],
+                "color": "#ffffff",
+                "fontWeight": 600,
+            },
+            {
+                "if": {"column_id": column, "filter_query": f"{{{column}}} > -1.5 && {{{column}}} <= -0.5"},
+                "backgroundColor": tier_colors[1],
+                "color": "#ffffff",
+                "fontWeight": 600,
+            },
+            {
+                "if": {"column_id": column, "filter_query": f"{{{column}}} > -0.5 && {{{column}}} < 0.5"},
+                "backgroundColor": tier_colors[2],
+                "color": "inherit",
+            },
+            {
+                "if": {"column_id": column, "filter_query": f"{{{column}}} >= 0.5 && {{{column}}} < 1.5"},
+                "backgroundColor": tier_colors[3],
+                "color": "#ffffff",
+                "fontWeight": 600,
+            },
+            {
+                "if": {"column_id": column, "filter_query": f"{{{column}}} >= 1.5"},
+                "backgroundColor": tier_colors[4],
+                "color": "#ffffff",
+                "fontWeight": 600,
+            },
+        ])
+
+    return styles
+
+
+def _build_group_separator_styles(theme_key):
+    divider_color = "rgba(97, 212, 160, 0.55)" if theme_key == "dark" else "rgba(15, 143, 99, 0.32)"
+    divider_shadow = "rgba(97, 212, 160, 0.18)" if theme_key == "dark" else "rgba(15, 143, 99, 0.12)"
+    return [
+        {
+            "if": {"column_id": "plate_appearances"},
+            "borderLeft": f"3px solid {divider_color}",
+            "boxShadow": f"inset 8px 0 0 {divider_shadow}",
+        },
+        {
+            "if": {"column_id": "xwOBA_zscore"},
+            "borderLeft": f"3px solid {divider_color}",
+            "boxShadow": f"inset 8px 0 0 {divider_shadow}",
+        },
+    ]
 
 
 def register_callbacks(app):
@@ -54,14 +186,15 @@ def register_callbacks(app):
     @app.callback(
         [Output("current-start-date", "data", allow_duplicate=True),
          Output("current-end-date", "data", allow_duplicate=True),
-         Output("selected-range-label", "data", allow_duplicate=True)],
+         Output("selected-range-label", "data", allow_duplicate=True),
+         Output("date-range-dropdown", "value", allow_duplicate=True)],
         Input("league-dropdown", "value"),
         prevent_initial_call=True
     )
     def initialize_date_range_from_dataset(league_id):
         """Initialize the working date range from the dataset that the API returns for the selected league."""
         if not league_id:
-            return "", "", "30d"
+            return "", "", "season", "season"
 
         try:
             response = requests.get(
@@ -70,25 +203,33 @@ def register_callbacks(app):
                 timeout=15,
             )
             if response.status_code != 200:
-                return "", "", "30d"
+                return "", "", "season", "season"
 
             payload = response.json()
-            return payload.get("start_date", ""), payload.get("end_date", ""), "custom"
+            return payload.get("start_date", ""), payload.get("end_date", ""), "season", "season"
         except Exception as exc:
             print(f"Error initializing date range: {exc}")
-            return "", "", "30d"
+            return "", "", "season", "season"
 
 
     @app.callback(
         Output("active-range-display", "children"),
         [Input("current-start-date", "data"),
-         Input("current-end-date", "data")],
+         Input("current-end-date", "data"),
+         Input("selected-range-label", "data")],
         prevent_initial_call=False
     )
-    def update_active_range_display(start_date, end_date):
+    def update_active_range_display(start_date, end_date, range_label):
         """Show the currently active date range even when the custom picker is hidden."""
         if start_date and end_date:
-            return f"{start_date} to {end_date}"
+            label_prefix = {
+                "7d": "Last 7 Days",
+                "14d": "Last 14 Days",
+                "30d": "Last 30 Days",
+                "season": "Season to Date",
+                "custom": "Custom Range",
+            }.get(range_label, "Active Range")
+            return f"{label_prefix}: {start_date} to {end_date}"
         return "No active range selected"
     
     
@@ -96,31 +237,34 @@ def register_callbacks(app):
     @app.callback(
         [Output("current-start-date", "data"),
          Output("current-end-date", "data"),
-         Output("selected-range-label", "data")],
-        [Input("btn-7days", "n_clicks"),
-         Input("btn-14days", "n_clicks"),
-         Input("btn-30days", "n_clicks")],
+         Output("selected-range-label", "data"),
+         Output("custom-range-div", "style")],
+        Input("date-range-dropdown", "value"),
+        State("current-end-date", "data"),
         prevent_initial_call=True
     )
-    def update_date_range(clicks_7, clicks_14, clicks_30):
-        """Update date range based on preset buttons."""
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    def update_date_range(selected_range, current_end_date):
+        """Update date range based on the selected preset dropdown value."""
+        reference_end = _resolve_reference_end(current_end_date)
 
-        triggered_id = ctx.triggered_id
-        if triggered_id == "btn-7days":
-            start_date = (datetime.now() - timedelta(days=6)).strftime("%Y-%m-%d")
-            range_label = "7d"
-        elif triggered_id == "btn-14days":
-            start_date = (datetime.now() - timedelta(days=13)).strftime("%Y-%m-%d")
-            range_label = "14d"
-        elif triggered_id == "btn-30days":
-            start_date = (datetime.now() - timedelta(days=29)).strftime("%Y-%m-%d")
-            range_label = "30d"
+        if selected_range == "custom":
+            return no_update, no_update, "custom", {"display": "flex"}
+        if selected_range == "7d":
+            start_date = reference_end - timedelta(days=6)
+        elif selected_range == "14d":
+            start_date = reference_end - timedelta(days=13)
+        elif selected_range == "30d":
+            start_date = reference_end - timedelta(days=29)
         else:
-            start_date = (datetime.now() - timedelta(days=29)).strftime("%Y-%m-%d")
-            range_label = "30d"
-        
-        return start_date, yesterday, range_label
+            start_date = datetime(reference_end.year, 3, 1)
+            selected_range = "season"
+
+        return (
+            start_date.strftime("%Y-%m-%d"),
+            reference_end.strftime("%Y-%m-%d"),
+            selected_range,
+            {"display": "none"},
+        )
 
 
     @app.callback(
@@ -136,66 +280,24 @@ def register_callbacks(app):
         if not start_date or not end_date:
             return "", "", "custom"
         return str(start_date), str(end_date), "custom"
-    
-    
+
+
     @app.callback(
-        Output("custom-range-div", "style"),
-        Input("btn-custom-range", "n_clicks"),
-        prevent_initial_call=True
+        [Output("current-theme", "data"),
+         Output("app-theme-root", "className"),
+         Output("btn-theme-toggle", "children")],
+        Input("btn-theme-toggle", "n_clicks"),
+        State("current-theme", "data"),
+        prevent_initial_call=False
     )
-    def toggle_custom_range(n_clicks):
-        """Toggle custom date range picker visibility."""
-        if n_clicks > 0:
-            return {"display": "flex"}
-        return {"display": "none"}
-    
-    
-    # ===== Weight Adjustment Callbacks =====
-    @app.callback(
-        [Output("weight-xwoba-display", "children"),
-         Output("weight-pull-air-display", "children"),
-         Output("weight-bbk-display", "children"),
-         Output("weight-sbpa-display", "children"),
-         Output("weights-sum-display", "children"),
-         Output("current-weights", "data")],
-        [Input("weight-xwoba", "value"),
-         Input("weight-pull-air", "value"),
-         Input("weight-bbk", "value"),
-         Input("weight-sbpa", "value"),
-         Input("btn-reset-weights", "n_clicks")],
-        prevent_initial_call=True
-    )
-    def update_weights(xwoba, pull_air, bbk, sbpa, reset_clicks):
-        """Update weight displays and current weights store."""
-        
-        # Reset to defaults if button clicked
-        if reset_clicks and reset_clicks > 0:
-            xwoba = 0.40
-            pull_air = 0.20
-            bbk = 0.30
-            sbpa = 0.10
-        
-        # Calculate total weight
-        total_weight = xwoba + pull_air + bbk + sbpa
-        
-        # Prepare displays
-        displays = [
-            f"Weight: {xwoba:.2f}",
-            f"Weight: {pull_air:.2f}",
-            f"Weight: {bbk:.2f}",
-            f"Weight: {sbpa:.2f}",
-            f"Total Weight: {total_weight:.2f}",
-        ]
-        
-        # Store current weights
-        current_weights = {
-            "xwOBA": xwoba,
-            "Pull Air %": pull_air,
-            "BB:K": bbk,
-            "SB per PA": sbpa
-        }
-        
-        return displays + [current_weights]
+    def update_theme(n_clicks, current_theme):
+        """Toggle the dashboard theme between dark and light modes."""
+        theme = current_theme or "dark"
+        if ctx.triggered_id == "btn-theme-toggle" and n_clicks:
+            theme = "light" if theme == "dark" else "dark"
+
+        next_label = "Switch to Dark Mode" if theme == "light" else "Switch to Light Mode"
+        return theme, f"theme-shell theme-{theme}", next_label
     
     
     # ===== Rankings Update Callback =====
@@ -251,8 +353,10 @@ def register_callbacks(app):
                 mismatch_count = data.get("mismatch_count", 0)
                 season_phase = data.get("season_phase", "unknown")
                 status_message = data.get("status_message", "")
+                resolved_start_date = data.get("start_date") or start_date or "N/A"
+                resolved_end_date = data.get("end_date") or end_date or "N/A"
                 summary = (
-                    f"{status_message} Range: {start_date or 'N/A'} to {end_date or 'N/A'} | "
+                    f"{status_message} Range: {resolved_start_date} to {resolved_end_date} | "
                     f"Matched players: {matched_count} | Mismatches: {mismatch_count} | Phase: {season_phase}"
                 )
                 filter_options = data.get("ownership_filter_options") or [{"label": "All Players", "value": "all"}]
@@ -285,10 +389,11 @@ def register_callbacks(app):
     @app.callback(
         Output("rankings-table-div", "children"),
         [Input("current-display-rows", "data"),
-         Input("ownership-filter", "value")],
+         Input("ownership-filter", "value"),
+         Input("current-theme", "data")],
         prevent_initial_call=False
     )
-    def render_rankings_table(rows, ownership_filter):
+    def render_rankings_table(rows, ownership_filter, current_theme):
         """Render the rankings or preseason roster table using the current ownership filter."""
         if not rows:
             return "No player rows available for the current selection."
@@ -320,10 +425,16 @@ def register_callbacks(app):
             "fantasy_status",
             "position",
             "mlb_team",
+            "plate_appearances",
+            "batted_ball_events",
             "xwOBA",
             "Pull Air %",
             "BB:K",
             "SB per PA",
+            "xwOBA_zscore",
+            "Pull Air %_zscore",
+            "BB:K_zscore",
+            "SB per PA_zscore",
             "composite_score",
             "data_status",
             "match_status",
@@ -333,24 +444,78 @@ def register_callbacks(app):
         if visible_columns:
             df = df[visible_columns]
 
+        for numeric_column in Z_SCORE_SECTION_COLUMNS:
+            if numeric_column in df.columns:
+                df[numeric_column] = pd.to_numeric(df[numeric_column], errors="coerce").round(2)
+
+        if "composite_score" in df.columns:
+            df["composite_score"] = pd.to_numeric(df["composite_score"], errors="coerce").map(
+                lambda value: None if pd.isna(value) else float(f"{value:.2f}")
+            )
+
         from dash import dash_table
+
+        theme_key = "light" if current_theme == "light" else "dark"
+        theme_styles = THEME_TABLE_STYLES[theme_key]
+        style_data_conditional = [
+            {
+                "if": {"row_index": "odd"},
+                "backgroundColor": theme_styles["odd"],
+            },
+            *(_build_group_separator_styles(theme_key)),
+            *(_build_z_score_tier_styles(df)),
+            {
+                "if": {"state": "active"},
+                "backgroundColor": "rgba(97, 212, 160, 0.10)" if theme_key == "dark" else "rgba(15, 143, 99, 0.10)",
+                "color": theme_styles["cell"]["color"],
+                "border": f"1px solid {'rgba(97, 212, 160, 0.55)' if theme_key == 'dark' else 'rgba(15, 143, 99, 0.32)'}",
+            },
+            {
+                "if": {"state": "selected"},
+                "backgroundColor": "rgba(97, 212, 160, 0.12)" if theme_key == "dark" else "rgba(15, 143, 99, 0.12)",
+                "color": theme_styles["cell"]["color"],
+                "border": f"1px solid {'rgba(97, 212, 160, 0.55)' if theme_key == 'dark' else 'rgba(15, 143, 99, 0.32)'}",
+            },
+        ]
+
+        table_css = [
+            {
+                "selector": ".dash-spreadsheet-inner tr:hover td",
+                "rule": "background-color: inherit !important; color: inherit !important; box-shadow: none !important;",
+            },
+            {
+                "selector": ".dash-spreadsheet-inner tr:hover td div",
+                "rule": "background-color: transparent !important; color: inherit !important;",
+            },
+            {
+                "selector": ".dash-spreadsheet-inner tbody tr:hover td",
+                "rule": "background-color: inherit !important; color: inherit !important; box-shadow: none !important;",
+            },
+            {
+                "selector": ".dash-spreadsheet-inner tbody tr:hover td div",
+                "rule": "background-color: transparent !important; color: inherit !important;",
+            },
+        ]
+
+        columns = []
+        for col in df.columns:
+            column_config = {"name": COLUMN_LABELS.get(col, col), "id": col}
+            if col in Z_SCORE_SECTION_COLUMNS or col == "composite_score":
+                column_config["type"] = "numeric"
+                column_config["format"] = Format(precision=2, scheme=Scheme.fixed)
+            columns.append(column_config)
 
         return dash_table.DataTable(
             data=df.to_dict("records"),
-            columns=[{"name": col, "id": col} for col in df.columns],
-            style_cell={"textAlign": "left", "whiteSpace": "normal", "height": "auto"},
-            style_header={
-                "backgroundColor": "rgb(230, 230, 230)",
-                "fontWeight": "bold"
-            },
-            style_data_conditional=[
-                {
-                    "if": {"row_index": "odd"},
-                    "backgroundColor": "rgb(248, 248, 248)"
-                }
-            ],
+            columns=columns,
+            style_cell=theme_styles["cell"],
+            style_header=theme_styles["header"],
+            style_header_conditional=_build_group_separator_styles(theme_key),
+            style_data_conditional=style_data_conditional,
+            css=table_css,
             sort_action="native",
             page_action="native",
             page_current=0,
-            page_size=20
+            page_size=20,
+            style_table={"overflowX": "auto", "borderRadius": "14px", "overflowY": "hidden"},
         )

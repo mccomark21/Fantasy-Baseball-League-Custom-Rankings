@@ -17,7 +17,7 @@ def test_get_stats_returns_rankings_and_precomputed_windows():
             "name": "Aaron Judge",
             "position": "OF",
             "mlb_team": "NYY",
-            "fantasy_status": "Rostered",
+            "fantasy_status": "Launch Angle Union",
             "savant_name": "Aaron Judge",
         }
     ]
@@ -48,6 +48,11 @@ def test_get_stats_returns_rankings_and_precomputed_windows():
     assert payload["matched_player_count"] == 1
     assert len(payload["rankings"]) == 1
     assert set(payload["precomputed_windows"]) == {"7d", "14d", "30d"}
+    assert payload["rankings"][0]["fantasy_status"] == "Launch Angle Union"
+    assert payload["rankings"][0]["xwOBA_zscore"] == 0
+    assert payload["rankings"][0]["BB:K"] == 1.0
+    assert payload["rankings"][0]["plate_appearances"] == 4
+    assert payload["rankings"][0]["batted_ball_events"] == 2
 
 
 def test_get_stats_returns_preseason_rows_when_no_current_stats():
@@ -57,7 +62,7 @@ def test_get_stats_returns_preseason_rows_when_no_current_stats():
             "name": "Aaron Judge",
             "position": "OF",
             "mlb_team": "NYY",
-            "fantasy_status": "Rostered",
+            "fantasy_status": "Launch Angle Union",
             "savant_name": "Aaron Judge",
             "mlb_id": 592450,
         },
@@ -95,6 +100,7 @@ def test_get_stats_returns_preseason_rows_when_no_current_stats():
     assert payload["stats_available"] is False
     assert len(payload["rankings"]) == 2
     assert payload["rankings"][0]["data_status"] == "Waiting for 2026 Statcast"
+    assert payload["rankings"][0]["fantasy_status"] == "Launch Angle Union"
     assert payload["rankings"][1]["match_status"] == "ambiguous"
     assert payload["ownership_filter_options"][0]["value"] == "all"
 
@@ -117,6 +123,8 @@ def test_demo_league_stats_payload_returns_reference_rankings():
     assert payload["season_phase"] == "development_reference"
     assert payload["stats_available"] is True
     assert len(payload["rankings"]) > 0
+    assert "plate_appearances" in payload["rankings"][0]
+    assert "batted_ball_events" in payload["rankings"][0]
     assert set(payload["precomputed_windows"]) == {"7d", "14d", "30d"}
 
 

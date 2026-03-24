@@ -13,9 +13,11 @@ Sync Yahoo Fantasy Baseball league rosters with Baseball Savant statcast data to
   - BB:K (Walk-to-Strikeout ratio)
   - SB per PA (Stolen bases per plate appearance)
 - **Z-Score Normalization**: Statistical normalization with outlier capping (±2.5, except xwOBA)
-- **Weighted Composite Scoring**: Customizable weighting system (defaults: 0.40 xwOBA, 0.20 Pull Air %, 0.30 BB:K, 0.10 SB per PA)
-- **Interactive Dashboard**: Plotly Dash web interface for league selection, weight customization, and ranking visualization
-- **Date Range Filtering**: Preset ranges (7/14/30 days) + custom date picker anchored to yesterday
+- **Weighted Composite Scoring**: Default scoring weights (0.40 xwOBA, 0.20 Pull Air %, 0.30 BB:K, 0.10 SB per PA)
+- **Interactive Dashboard**: Plotly Dash web interface for league selection, date filtering, and ranking visualization
+- **Date Range Filtering**: Dropdown presets for 7/14/30 days, Season to Date, and a custom date picker
+- **Theme Toggle**: Default dark mode with a manual light/dark switch
+- **Expanded Metrics Table**: Raw metrics displayed beside each Z-score with 5-tier heat coloring on raw values
 - **Mismatch Review**: Inspect unresolved Yahoo-to-MLB player mappings through a debug endpoint
 - **Daily Auto-Refresh**: Nightly data refresh (default 1:00 AM) with manual refresh display
 - **Preseason Dashboard Mode**: Show roster readiness and player-match coverage before 2026 Statcast data exists
@@ -115,9 +117,8 @@ Visit `http://localhost:8050` in your browser to access the dashboard.
 
 1. **Authorize with Yahoo**: Click the OAuth link to authorize the app with your Yahoo Fantasy account
 2. **Select League**: Choose your league from the dropdown
-3. **Adjust Date Range**: Use preset buttons (7/14/30 days) or pick custom dates
-4. **Customize Weights**: Adjust metric sliders to change ranking weight distribution
-5. **View Rankings**: Rankings update in real-time as weights change
+3. **Adjust Date Range**: Use the date-range dropdown for 7/14/30-day windows, Season to Date, or a custom range
+4. **View Rankings**: Rankings update for the active range, with fantasy team ownership labels plus PA, BBE, raw metrics, and Z-scores
 
 ## API Endpoints
 
