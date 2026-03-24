@@ -9,11 +9,15 @@ from datetime import datetime, timedelta
 import json
 import os
 import logging
+from typing import Dict, List, Optional, Tuple
+
+import pandas as pd
 
 from src.backend.config import config
 from src.backend.metrics import calculate_rankings, MetricsCalculator
 from src.backend.yahoo_oauth import YahooOAuthManager
 from src.backend.cache import DataCache, LeagueCacheManager
+from src.backend.savant_client import BaseballSavantClient
 
 # Configure logging
 logging.basicConfig(level=config.LOG_LEVEL)
@@ -39,6 +43,127 @@ app.add_middleware(
 oauth_manager = YahooOAuthManager()
 cache = DataCache(config.DATA_DIR)
 league_cache = LeagueCacheManager(cache)
+savant_client = BaseballSavantClient()
+
+PRECOMPUTED_WINDOWS = (7, 14, 30)
+CURRENT_SEASON = 2026
+SEASON_START_MONTH = 3
+SEASON_START_DAY = 1
+
+
+def _resolve_date_range(
+    season: int,
+    days_back: int,
+    start_date: Optional[str],
+    end_date: Optional[str],
+) -> Tuple[datetime, datetime]:
+    resolved_end = datetime.fromisoformat(end_date) if end_date else datetime.now() - timedelta(days=1)
+    season_start = datetime(season, SEASON_START_MONTH, SEASON_START_DAY)
+
+    if start_date:
+        resolved_start = datetime.fromisoformat(start_date)
+    else:
+        resolved_start = max(season_start, resolved_end - timedelta(days=max(days_back - 1, 0)))
+
+    if resolved_start > resolved_end:
+        raise ValueError("start_date must be before or equal to end_date")
+
+    return resolved_start, resolved_end
+
+
+def _get_league_player_pool(league_id: str) -> List[Dict]:
+    def fetch_player_pool() -> List[Dict]:
+        player_pool = oauth_manager.get_all_league_players_with_ownership(league_id)
+        if player_pool is None:
+            raise RuntimeError("Failed to fetch player pool from Yahoo")
+        return player_pool
+
+    player_pool = cache.get_or_load(
+        f"league_player_pool_{league_id}",
+        fetch_player_pool,
+        max_age_hours=24,
+    )
+    return player_pool or []
+
+
+def _resolve_league_player_pool(league_id: str, player_pool: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
+    matched_players, mismatches = savant_client.resolve_yahoo_players(player_pool)
+    cache.save(
+        f"player_mismatches_{league_id}",
+        mismatches,
+        metadata={
+            "league_id": league_id,
+            "matched_count": len(matched_players),
+            "mismatch_count": len(mismatches),
+            "updated_at": datetime.now().isoformat(),
+        },
+    )
+    return matched_players, mismatches
+
+
+def _get_cached_daily_aggregate_records(
+    league_id: str,
+    matched_players: List[Dict],
+    start_date: datetime,
+    end_date: datetime,
+) -> List[Dict]:
+    if not matched_players:
+        return []
+
+    player_ids = sorted({int(player["mlb_id"]) for player in matched_players})
+    cache_key = f"savant_daily_{league_id}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
+
+    def fetch_daily_records() -> List[Dict]:
+        daily_aggregates = savant_client.get_daily_aggregates_for_players(player_ids, start_date, end_date)
+        return savant_client.dataframe_to_records(daily_aggregates)
+
+    return cache.get_or_load(cache_key, fetch_daily_records, max_age_hours=12) or []
+
+
+def _prepare_rankings_dataframe(
+    metrics_df: pd.DataFrame,
+    matched_players: List[Dict],
+    weights: Dict[str, float],
+) -> List[Dict]:
+    if metrics_df.empty:
+        return []
+
+    roster_df = pd.DataFrame(matched_players)
+    roster_columns = ["mlb_id", "player_key", "name", "position", "mlb_team", "fantasy_status", "savant_name"]
+    roster_info = roster_df[roster_columns].drop_duplicates(subset=["mlb_id"])
+
+    merged = metrics_df.merge(roster_info, on="mlb_id", how="left")
+    merged["player_name"] = merged["name"].fillna(merged["player_name"])
+    merged["xwOBA"] = merged["xwOBA"].fillna(0.0)
+    merged["Pull Air %"] = merged["Pull Air %"].fillna(0.0)
+    merged["BB:K"] = merged["BB:K"].fillna(0.0)
+    merged["SB per PA"] = merged["SB per PA"].fillna(0.0)
+
+    ranked = calculate_rankings(merged, weights)
+    return ranked.to_dict(orient="records")
+
+
+def _build_precomputed_window_payload(
+    daily_aggregate_df: pd.DataFrame,
+    matched_players: List[Dict],
+    weights: Dict[str, float],
+    end_date: datetime,
+) -> Dict[str, List[Dict]]:
+    window_payload: Dict[str, List[Dict]] = {}
+    raw_windows = savant_client.build_precomputed_windows(
+        daily_aggregate_df,
+        windows=PRECOMPUTED_WINDOWS,
+        end_date=end_date,
+    )
+
+    for window_key, window_records in raw_windows.items():
+        window_df = pd.DataFrame(window_records)
+        if window_df.empty:
+            window_payload[window_key] = []
+            continue
+        window_payload[window_key] = _prepare_rankings_dataframe(window_df, matched_players, weights)
+
+    return window_payload
 
 
 # ============================================================================
@@ -133,24 +258,18 @@ async def get_roster(league_id: str):
         if not oauth_manager.is_token_valid():
             raise HTTPException(status_code=401, detail="Not authorized. Please login first.")
         
-        # Fetch roster from Yahoo (or use cache if fresh)
-        def fetch_roster():
-            roster = oauth_manager.get_league_roster(league_id)
-            if roster is None:
-                raise Exception("Failed to fetch roster from Yahoo")
-            return roster
-        
-        roster = cache.get_or_load(
-            f"roster_{league_id}",
-            fetch_roster,
-            max_age_hours=24
-        )
+        roster = _get_league_player_pool(league_id)
         
         if not roster:
             raise HTTPException(status_code=500, detail="Failed to fetch roster")
         
         logger.info(f"Returning roster for league {league_id} with {len(roster)} players")
-        return {"status": "success", "league_id": league_id, "roster": roster}
+        return {
+            "status": "success",
+            "league_id": league_id,
+            "player_count": len(roster),
+            "roster": roster,
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -166,6 +285,11 @@ async def get_roster(league_id: str):
 async def get_stats(
     league_id: str,
     days_back: int = 30,
+    season: int = CURRENT_SEASON,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    include_daily: bool = False,
+    include_windows: bool = True,
     weights: dict = None
 ):
     """
@@ -180,30 +304,73 @@ async def get_stats(
         Player stats, Z-scores, and rankings
     """
     try:
-        # Load cached stats
-        stats_file = os.path.join(config.DATA_DIR, f"stats_{league_id}.json")
-        if os.path.exists(stats_file):
-            with open(stats_file, "r") as f:
-                stats_data = json.load(f)
-        else:
-            # TODO: Fetch from Savant API and cache
-            stats_data = {}
-        
-        # Use default weights if not provided
+        resolved_start_date, resolved_end_date = _resolve_date_range(
+            season=season,
+            days_back=days_back,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
         if weights is None:
             weights = MetricsCalculator.get_default_weights()
-        
-        # TODO: Filter by date range and calculate rankings
-        rankings = []
-        
+
+        player_pool = _get_league_player_pool(league_id)
+        matched_players, mismatches = _resolve_league_player_pool(league_id, player_pool)
+        daily_records = _get_cached_daily_aggregate_records(
+            league_id,
+            matched_players,
+            resolved_start_date,
+            resolved_end_date,
+        )
+        daily_aggregate_df = savant_client.records_to_daily_dataframe(daily_records)
+        metrics_df = savant_client.aggregate_daily_metrics(daily_aggregate_df)
+        rankings = _prepare_rankings_dataframe(metrics_df, matched_players, weights)
+        precomputed_windows = {}
+        if include_windows:
+            precomputed_windows = _build_precomputed_window_payload(
+                daily_aggregate_df,
+                matched_players,
+                weights,
+                resolved_end_date,
+            )
+
         return {
             "status": "success",
             "league_id": league_id,
-            "updated_at": stats_data.get("updated_at"),
-            "rankings": rankings
+            "season": season,
+            "start_date": resolved_start_date.strftime("%Y-%m-%d"),
+            "end_date": resolved_end_date.strftime("%Y-%m-%d"),
+            "updated_at": datetime.now().isoformat(),
+            "matched_player_count": len(matched_players),
+            "mismatch_count": len(mismatches),
+            "rankings": rankings,
+            "precomputed_windows": precomputed_windows,
+            "daily_aggregates": daily_records if include_daily else [],
         }
     except Exception as e:
         logger.error(f"Error fetching stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/debug/mismatches/{league_id}")
+async def get_player_match_debug(league_id: str):
+    """Return Yahoo players that could not be resolved to a unique MLB ID."""
+    try:
+        if not oauth_manager.is_token_valid():
+            raise HTTPException(status_code=401, detail="Not authorized. Please login first.")
+
+        player_pool = _get_league_player_pool(league_id)
+        _, mismatches = _resolve_league_player_pool(league_id, player_pool)
+        return {
+            "status": "success",
+            "league_id": league_id,
+            "mismatch_count": len(mismatches),
+            "mismatches": mismatches,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching player mismatch debug data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

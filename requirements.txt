@@ -11,6 +11,7 @@ numpy==1.26.2
 # API & HTTP
 requests==2.31.0
 httpx==0.25.2
+pybaseball==2.2.7
 
 # Authentication & OAuth
 oauthlib==3.2.2

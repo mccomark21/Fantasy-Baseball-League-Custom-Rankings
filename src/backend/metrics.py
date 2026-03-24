@@ -53,7 +53,7 @@ class MetricsCalculator:
             mean = df[metric].mean()
             std = df[metric].std()
             
-            if std == 0:
+            if pd.isna(std) or std == 0:
                 # Avoid division by zero; all players have same value
                 df[f"{metric}_zscore"] = 0
             else:

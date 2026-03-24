@@ -95,14 +95,20 @@ For local manual validation, use `tests/manual/oauth_smoke.py` to confirm creden
 ```
 APScheduler triggers at 1:00 AM
   ↓
-Fetch user's Yahoo leagues & rosters
+Fetch user's Yahoo leagues and full player pool ownership data
   ↓
-Cache to data/leagues.json, data/roster_*.json
+Resolve Yahoo players to MLBAM IDs
   ↓
-For each player in roster:
-  Query Baseball Savant for stats (as-of yesterday)
+For matched hitters:
+  Pull Statcast pitch rows from Savant/pybaseball
   ↓
-Cache results to data/stats_*.json with timestamp
+Aggregate into one row per player per day
+  (PA, BB, K, BBE, air balls, pulled air balls,
+   contact xwOBA numerator/denominator)
+  ↓
+Refresh the trailing 7-day correction window
+  ↓
+Rebuild 7-day / 14-day / 30-day precomputed windows
   ↓
 Process complete; next refresh at 1:00 AM tomorrow
 ```
@@ -114,14 +120,16 @@ User selects league + date range + custom weights (Dash)
 Frontend calls: GET /api/stats/{league_id}?days_back=30&weights={...}
   ↓
 Backend:
-  1. Load cached roster (data/roster_*.json)
-  2. Load cached stats (data/stats_*.json), filter by date range
-  3. Calculate Z-scores via metrics.py
-  4. Cap Z-scores (±2.5, except xwOBA)
-  5. Calculate composite score using custom weights
-  6. Rank players by composite score
+  1. Load cached Yahoo player pool for the league
+  2. Resolve Yahoo players to MLBAM IDs and cache mismatches for review
+  3. Load cached daily Savant aggregates for the requested range
+  4. Sum daily rows into date-window metrics
+  5. Calculate Z-scores via metrics.py
+  6. Cap Z-scores (±2.5, except xwOBA)
+  7. Calculate composite score using custom weights
+  8. Rank players by composite score
   ↓
-Return ranked player list + metadata
+Return ranked player list + metadata + optional precomputed windows
   ↓
 Frontend renders table
 ```
@@ -147,7 +155,8 @@ Reads environment variables from the project root `.env` file:
 - `get_access_token()`: Get valid token (refresh if needed)
 - `get_leagues()`: Fetch the user's 2026-capable MLB leagues via Yahoo XML parsing
 - `get_league_players_with_ownership(league_id, count, start)`: Fetch a paged league player sample with MLB team and fantasy ownership status
-- `get_league_roster(league_id)`: Convenience wrapper that returns a 25-player ownership sample
+- `get_all_league_players_with_ownership(league_id, page_size, max_pages)`: Enumerate the full league player pool with pagination and deduplication
+- `get_league_roster(league_id)`: Convenience wrapper that returns the full league player pool with ownership info
 
 **Token Storage**: `config/yahoo_token.json` (includes expiration time)
 
@@ -155,13 +164,19 @@ Reads environment variables from the project root `.env` file:
 **Class**: `BaseballSavantClient`
 
 **Key Methods**:
-- `get_player_stats(player_names, start_date, end_date)`: Fetch stats for players
-- `_query_player_stats(player_name, start_date, end_date)`: Query individual player
-- `get_player_by_name(player_name)`: Look up player by name
-- `get_stats_for_date_range(player_ids, start_date, end_date)`: Fetch date-ranged stats
-- `calculate_metrics_from_statcast(statcast_data)`: Compute metrics from raw data
+- `resolve_yahoo_players(yahoo_players)`: Resolve Yahoo player rows to MLBAM IDs and collect mismatches
+- `get_player_by_name(player_name)`: Resolve a single player name to an MLBAM hitter ID when possible
+- `get_daily_aggregates_for_players(player_ids, start_date, end_date)`: Fetch Statcast pitch rows and aggregate them into one row per player per day
+- `calculate_daily_aggregates(statcast_data)`: Collapse pitch rows into additive daily fields
+- `aggregate_daily_metrics(daily_aggregates)`: Roll daily rows up into date-window metrics
+- `build_precomputed_windows(daily_aggregates, windows, end_date)`: Build 7-day / 14-day / 30-day fast-path windows from daily rows
+- `calculate_metrics_from_statcast(statcast_data)`: Compute contact-only xwOBA, Pull Air %, and BB:K from raw Statcast rows
 
-**TODO**: Full API integration and metric calculations from statcast records
+**Current model**:
+- Contact-only xwOBA from `estimated_woba_using_speedangle`
+- Pull Air % as pulled airborne batted balls divided by batted-ball events
+- BB:K from completed plate appearance outcomes
+- `SB per PA` currently defaults to `0.0` until a stolen-base source is added
 
 ### 4. Metrics Calculation Engine (`metrics.py`)
 **Class**: `MetricsCalculator`
@@ -200,6 +215,7 @@ Reads environment variables from the project root `.env` file:
 | `/api/leagues` | GET | List user's leagues |
 | `/api/roster/{league_id}` | GET | Get league roster |
 | `/api/stats/{league_id}` | GET | Get stats + rankings |
+| `/api/debug/mismatches/{league_id}` | GET | Review unresolved Yahoo-to-MLB player matches |
 | `/api/calculate-rankings` | POST | Calculate rankings from custom stats |
 | `/api/config` | GET | Get default config |
 
@@ -247,29 +263,50 @@ Reads environment variables from the project root `.env` file:
 ```json
 [
   {
-    "player_id": "9999",
+    "player_key": "469.p.9999",
     "name": "Mike Trout",
-    "mlb_id": 99999,
-    "team": "LAA",
-    "position": "CF"
+    "position": "CF",
+    "mlb_team": "LAA",
+    "fantasy_status": "League Winners"
   }
 ]
 ```
 
-**`data/stats_{league_id}.json`**
+**`data/savant_daily_{league_id}_{start}_{end}.json`**
 ```json
-{
-  "updated_at": "2026-03-21T01:05:00Z",
-  "players": [
-    {
-      "player_name": "Mike Trout",
-      "xwOBA": 0.380,
-      "Pull Air %": 42.5,
-      "BB:K": 1.4,
-      "SB per PA": 0.08
-    }
-  ]
-}
+[ 
+  {
+    "mlb_id": 545361,
+    "player_name": "Trout, Mike",
+    "date": "2026-04-17",
+    "plate_appearances": 5,
+    "walks": 1,
+    "strikeouts": 1,
+    "batted_ball_events": 3,
+    "air_balls": 2,
+    "pulled_air_balls": 1,
+    "xwoba_contact_sum": 1.245,
+    "xwoba_contact_n": 3
+  }
+]
+```
+
+**`data/player_mismatches_{league_id}.json`**
+```json
+[
+  {
+    "player_key": "469.p.8888",
+    "name": "Luis Garcia",
+    "mlb_team": "HOU",
+    "fantasy_status": "Free Agent",
+    "match_status": "ambiguous",
+    "reason": "Multiple MLBAM matches found for player name",
+    "candidates": [
+      {"mlb_id": 111111, "player_name": "luis garcia", "mlb_played_last": 2026},
+      {"mlb_id": 222222, "player_name": "luis garcia", "mlb_played_last": 2026}
+    ]
+  }
+]
 ```
 
 ### API Response Example
@@ -279,7 +316,12 @@ Reads environment variables from the project root `.env` file:
 {
   "status": "success",
   "league_id": "12345.l.123456",
-  "updated_at": "2026-03-21T01:05:00Z",
+  "season": 2026,
+  "start_date": "2026-03-01",
+  "end_date": "2026-03-30",
+  "updated_at": "2026-03-30T01:05:00Z",
+  "matched_player_count": 148,
+  "mismatch_count": 3,
   "rankings": [
     {
       "rank": 1,
@@ -292,9 +334,16 @@ Reads environment variables from the project root `.env` file:
       "BB:K_zscore": 1.12,
       "SB per PA": 0.08,
       "SB per PA_zscore": 0.92,
-      "composite_score": 1.08
+      "composite_score": 1.08,
+      "fantasy_status": "League Winners",
+      "mlb_team": "LAA"
     }
-  ]
+  ],
+  "precomputed_windows": {
+    "7d": [],
+    "14d": [],
+    "30d": []
+  }
 }
 ```
 
@@ -307,13 +356,13 @@ Reads environment variables from the project root `.env` file:
 
 ### API Requests
 - Missing league: Return 404 or empty list
-- Invalid date range: Use defaults
+- Invalid date range: Return 500 with validation error details
 - No stats found: Return empty rankings
 - Server error: Return 500 with error message
 
 ### Metrics Calculation
 - Missing metric: Skip player or use 0 Z-score
-- Division by zero (all same value): Set Z-score to 0
+- Division by zero or single-player cohort: Set Z-score to 0
 - Invalid weights (don't sum to 1.0): Raise ValueError
 
 ## Security Considerations
@@ -327,9 +376,11 @@ Reads environment variables from the project root `.env` file:
 ## Performance Considerations
 
 1. **Caching**: 24-hour cache with single nightly refresh
-2. **Data Filtering**: Filter cached data by date range in memory
-3. **Pagination**: Rankings table paginated (20 rows/page)
-4. **Async**: FastAPI app is fully async-capable
+2. **Daily Aggregate Model**: Store additive player-day rows and recompute arbitrary date ranges by summing them
+3. **Correction Window**: Refresh a trailing 7-day window to absorb source corrections without rebuilding the full season
+4. **Precomputed Windows**: Cache 7-day / 14-day / 30-day rollups for fast UI switching
+5. **Pagination**: Rankings table paginated (20 rows/page)
+6. **Async**: FastAPI app is fully async-capable
 
 ## Testing Strategy
 
@@ -337,8 +388,8 @@ Reads environment variables from the project root `.env` file:
 |--------|-----------|----------|
 | `metrics.py` | Unit | Z-score calc, capping, composite score |
 | `yahoo_oauth.py` | Integration | Mock Yahoo API, token exchange |
-| `savant_client.py` | Integration | Mock Savant API responses |
-| `main.py` | Integration | API endpoints with mock data |
+| `savant_client.py` | Unit | Daily aggregates, contact-only xwOBA, player lookup matching |
+| `main.py` | Integration | Stats endpoint, mismatch debug, roster-aware payloads |
 | `layouts.py` | Manual | UI component rendering |
 | `callbacks.py` | Manual | Dash callback behavior |
 

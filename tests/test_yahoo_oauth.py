@@ -323,6 +323,35 @@ class TestYahooOAuthAPICalls:
         assert players[0]["position"] == "CF"
         assert players[0]["fantasy_status"] == "League Winners"
 
+    def test_get_all_league_players_with_ownership_paginates(self):
+        """Test paginated ownership fetching collects all unique players."""
+        with patch('src.backend.yahoo_oauth.config') as mock_config:
+            mock_config.YAHOO_CLIENT_ID = "test_client_id"
+            mock_config.YAHOO_CLIENT_SECRET = "test_client_secret"
+            mock_config.YAHOO_REDIRECT_URI = "http://localhost:8000/oauth/callback"
+            mock_config.CONFIG_DIR = "/tmp"
+
+            manager = YahooOAuthManager()
+
+        with patch.object(manager, 'get_league_players_with_ownership') as mock_page_fetch:
+            mock_page_fetch.side_effect = [
+                [
+                    {"player_key": "1", "name": "Player One", "position": "1B", "mlb_team": "AAA", "fantasy_status": "Free Agent"},
+                    {"player_key": "2", "name": "Player Two", "position": "2B", "mlb_team": "BBB", "fantasy_status": "Waivers"},
+                ],
+                [
+                    {"player_key": "2", "name": "Player Two", "position": "2B", "mlb_team": "BBB", "fantasy_status": "Waivers"},
+                    {"player_key": "3", "name": "Player Three", "position": "SS", "mlb_team": "CCC", "fantasy_status": "Contender"},
+                ],
+                [],
+            ]
+
+            players = manager.get_all_league_players_with_ownership("12345.l.123456", page_size=2)
+
+        assert players is not None
+        assert [player["player_key"] for player in players] == ["1", "2", "3"]
+        assert mock_page_fetch.call_count == 3
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -316,9 +316,59 @@ class YahooOAuthManager:
             logger.error(f"Error parsing ownership XML: {e}")
             return None
 
+    def get_all_league_players_with_ownership(
+        self,
+        league_id: str,
+        page_size: int = 25,
+        max_pages: Optional[int] = None,
+    ) -> Optional[List[Dict]]:
+        """Enumerate the Yahoo league player pool with pagination and deduplication."""
+        all_players: List[Dict] = []
+        seen_player_keys = set()
+        page_index = 0
+        start = 0
+
+        while True:
+            page_players = self.get_league_players_with_ownership(
+                league_id,
+                count=page_size,
+                start=start,
+            )
+
+            if page_players is None:
+                if all_players:
+                    logger.warning(
+                        "Stopped pagination early for league %s after %s players",
+                        league_id,
+                        len(all_players),
+                    )
+                    return all_players
+                return None
+
+            if not page_players:
+                break
+
+            for player in page_players:
+                player_key = player.get("player_key")
+                if player_key and player_key not in seen_player_keys:
+                    seen_player_keys.add(player_key)
+                    all_players.append(player)
+
+            page_index += 1
+            if len(page_players) < page_size:
+                break
+
+            if max_pages is not None and page_index >= max_pages:
+                break
+
+            start += page_size
+
+        logger.info("Fetched %s total players with ownership for league %s", len(all_players), league_id)
+        return all_players
+
     def get_league_roster(self, league_id: str) -> Optional[List[Dict]]:
-        """Convenience wrapper for a 25-player ownership sample."""
-        return self.get_league_players_with_ownership(league_id, count=25)
+        """Convenience wrapper for the full league player pool with ownership info."""
+        return self.get_all_league_players_with_ownership(league_id)
     
     def _load_token(self) -> Optional[Dict]:
         """Load token from file."""

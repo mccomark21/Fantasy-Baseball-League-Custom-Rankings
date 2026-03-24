@@ -136,6 +136,24 @@ class TestMetricsCalculator:
         assert weights["BB:K"] == 0.30
         assert weights["SB per PA"] == 0.10
 
+    def test_normalize_z_scores_single_player(self):
+        """Test that a one-player cohort does not produce NaN z-scores."""
+        calculator = MetricsCalculator()
+        single_player_df = pd.DataFrame({
+            "player_name": ["Solo Player"],
+            "xwOBA": [0.350],
+            "Pull Air %": [40.0],
+            "BB:K": [1.2],
+            "SB per PA": [0.05]
+        })
+
+        result = calculator.normalize_z_scores(single_player_df)
+
+        assert result.loc[0, "xwOBA_zscore"] == 0
+        assert result.loc[0, "Pull Air %_zscore"] == 0
+        assert result.loc[0, "BB:K_zscore"] == 0
+        assert result.loc[0, "SB per PA_zscore"] == 0
+
 
 class TestCalculateRankingsPipeline:
     """Test full ranking calculation pipeline"""
