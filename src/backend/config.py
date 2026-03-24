@@ -29,6 +29,9 @@ class Config:
     # Refresh Schedule (nightly)
     REFRESH_HOUR = int(os.getenv("REFRESH_HOUR", 1))
     REFRESH_MINUTE = int(os.getenv("REFRESH_MINUTE", 0))
+
+    # Season readiness
+    CURRENT_SEASON_OPENING_DAY = os.getenv("CURRENT_SEASON_OPENING_DAY", "2026-03-27")
     
     # Dash Configuration
     DASH_HOST = os.getenv("DASH_HOST", "127.0.0.1")

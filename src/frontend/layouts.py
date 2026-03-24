@@ -5,6 +5,12 @@ Defines the structure and UI elements of the dashboard
 from dash import dcc, html
 from datetime import datetime, timedelta
 
+from src.backend.demo_data import DEMO_LEAGUE_ID
+
+
+DEMO_START_DATE = "2025-08-01"
+DEMO_END_DATE = "2025-08-30"
+
 
 def create_dashboard_layout():
     """
@@ -49,10 +55,23 @@ def create_dashboard_layout():
                                     dcc.Dropdown(
                                         id="league-dropdown",
                                         options=[
-                                            {"label": "Select a league...", "value": ""}
+                                            {"label": "Demo League (2025 Reference)", "value": DEMO_LEAGUE_ID}
                                         ],
-                                        value="",
+                                        value=DEMO_LEAGUE_ID,
                                         placeholder="Select a league",
+                                        style={"width": "100%"}
+                                    )
+                                ]
+                            ),
+                            html.Div(
+                                className="control-group",
+                                children=[
+                                    html.Label("Player Filter", htmlFor="ownership-filter"),
+                                    dcc.Dropdown(
+                                        id="ownership-filter",
+                                        options=[{"label": "All Players", "value": "all"}],
+                                        value="all",
+                                        clearable=False,
                                         style={"width": "100%"}
                                     )
                                 ]
@@ -103,6 +122,22 @@ def create_dashboard_layout():
                                         ]
                                     )
                                 ]
+                            ),
+                            html.Div(
+                                className="control-group",
+                                children=[
+                                    html.Label("Active Range"),
+                                    html.Div(
+                                        id="active-range-display",
+                                        style={
+                                            "padding": "10px 12px",
+                                            "backgroundColor": "#fff",
+                                            "borderRadius": "4px",
+                                            "minHeight": "20px",
+                                        },
+                                        children=f"{DEMO_START_DATE} to {DEMO_END_DATE}"
+                                    )
+                                ]
                             )
                         ]
                     ),
@@ -119,7 +154,7 @@ def create_dashboard_layout():
                                     html.Label("Start Date"),
                                     dcc.DatePickerSingle(
                                         id="date-picker-start",
-                                        date=datetime.now() - timedelta(days=30),
+                                        date=DEMO_START_DATE,
                                         style={"width": "100%"}
                                     )
                                 ]
@@ -130,10 +165,21 @@ def create_dashboard_layout():
                                     html.Label("End Date"),
                                     dcc.DatePickerSingle(
                                         id="date-picker-end",
-                                        date=datetime.now() - timedelta(days=1),
+                                        date=DEMO_END_DATE,
                                         style={"width": "100%"}
                                     )
                                 ]
+                            )
+                        ]
+                    ),
+                    html.Div(
+                        className="button-group",
+                        children=[
+                            html.Button(
+                                "Apply Filters",
+                                id="btn-apply-filters",
+                                className="btn btn-primary",
+                                n_clicks=0
                             )
                         ]
                     )
@@ -282,6 +328,24 @@ def create_dashboard_layout():
             html.Div(
                 children=[
                     html.H3("Player Rankings"),
+                    html.Div(
+                        id="rankings-summary",
+                        style={
+                            "marginBottom": "12px",
+                            "fontSize": "14px",
+                            "color": "#444"
+                        },
+                        children="Select a league to load rankings."
+                    ),
+                    html.Div(
+                        id="mismatch-review",
+                        style={
+                            "marginBottom": "12px",
+                            "fontSize": "13px",
+                            "color": "#555"
+                        },
+                        children="Mismatch review will appear here when needed."
+                    ),
                     dcc.Loading(
                         id="loading",
                         type="default",
@@ -300,9 +364,12 @@ def create_dashboard_layout():
             ),
             
             # ===== Hidden Stores =====
-            dcc.Store(id="current-league-id", data=""),
-            dcc.Store(id="current-start-date", data=""),
-            dcc.Store(id="current-end-date", data=""),
+            dcc.Interval(id="initial-load", interval=250, n_intervals=0, max_intervals=1),
+            dcc.Store(id="current-league-id", data=DEMO_LEAGUE_ID),
+            dcc.Store(id="current-start-date", data=DEMO_START_DATE),
+            dcc.Store(id="current-end-date", data=DEMO_END_DATE),
+            dcc.Store(id="selected-range-label", data="custom"),
+            dcc.Store(id="current-display-rows", data=[]),
             dcc.Store(id="current-weights", data={
                 "xwOBA": 0.40,
                 "Pull Air %": 0.20,

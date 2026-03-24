@@ -2,10 +2,11 @@
 Plotly Dash callback functions
 Handles user interactions and data updates in the dashboard
 """
-from dash import Input, Output, State, callback
+from dash import Input, Output, State, callback, ctx, html
 import requests
 from datetime import datetime, timedelta
 import pandas as pd
+import json
 
 
 def register_callbacks(app):
@@ -22,9 +23,9 @@ def register_callbacks(app):
     # ===== League Selection Callback =====
     @app.callback(
         [Output("current-league-id", "data"),
-         Output("league-dropdown", "options")],
-        Input("league-dropdown", "id"),
-        prevent_initial_call=True
+         Output("league-dropdown", "options"),
+         Output("league-dropdown", "value")],
+        Input("initial-load", "n_intervals")
     )
     def load_leagues(_):
         """Load available leagues from API."""
@@ -39,19 +40,63 @@ def register_callbacks(app):
                     {"label": league.get("name"), "value": league.get("id")}
                     for league in leagues
                 ]
-                
-                return "", options
+                if not options:
+                    options = [{"label": "No leagues available", "value": ""}]
+                default_league = options[0]["value"] if options and options[0]["value"] else ""
+                return default_league, options, default_league
             else:
-                return "", [{"label": "Error loading leagues", "value": ""}]
+                return "", [{"label": "Error loading leagues", "value": ""}], ""
         except Exception as e:
             print(f"Error loading leagues: {e}")
-            return "", [{"label": "Error loading leagues", "value": ""}]
+            return "", [{"label": "Error loading leagues", "value": ""}], ""
+
+
+    @app.callback(
+        [Output("current-start-date", "data", allow_duplicate=True),
+         Output("current-end-date", "data", allow_duplicate=True),
+         Output("selected-range-label", "data", allow_duplicate=True)],
+        Input("league-dropdown", "value"),
+        prevent_initial_call=True
+    )
+    def initialize_date_range_from_dataset(league_id):
+        """Initialize the working date range from the dataset that the API returns for the selected league."""
+        if not league_id:
+            return "", "", "30d"
+
+        try:
+            response = requests.get(
+                f"http://localhost:8000/api/stats/{league_id}",
+                params={"include_windows": "true"},
+                timeout=15,
+            )
+            if response.status_code != 200:
+                return "", "", "30d"
+
+            payload = response.json()
+            return payload.get("start_date", ""), payload.get("end_date", ""), "custom"
+        except Exception as exc:
+            print(f"Error initializing date range: {exc}")
+            return "", "", "30d"
+
+
+    @app.callback(
+        Output("active-range-display", "children"),
+        [Input("current-start-date", "data"),
+         Input("current-end-date", "data")],
+        prevent_initial_call=False
+    )
+    def update_active_range_display(start_date, end_date):
+        """Show the currently active date range even when the custom picker is hidden."""
+        if start_date and end_date:
+            return f"{start_date} to {end_date}"
+        return "No active range selected"
     
     
     # ===== Date Range Selection Callbacks =====
     @app.callback(
         [Output("current-start-date", "data"),
-         Output("current-end-date", "data")],
+         Output("current-end-date", "data"),
+         Output("selected-range-label", "data")],
         [Input("btn-7days", "n_clicks"),
          Input("btn-14days", "n_clicks"),
          Input("btn-30days", "n_clicks")],
@@ -60,18 +105,37 @@ def register_callbacks(app):
     def update_date_range(clicks_7, clicks_14, clicks_30):
         """Update date range based on preset buttons."""
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        
-        # Determine which button was clicked
-        if clicks_7 > 0:
-            start_date = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d")
-        elif clicks_14 > 0:
-            start_date = (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%d")
-        elif clicks_30 > 0:
-            start_date = (datetime.now() - timedelta(days=31)).strftime("%Y-%m-%d")
+
+        triggered_id = ctx.triggered_id
+        if triggered_id == "btn-7days":
+            start_date = (datetime.now() - timedelta(days=6)).strftime("%Y-%m-%d")
+            range_label = "7d"
+        elif triggered_id == "btn-14days":
+            start_date = (datetime.now() - timedelta(days=13)).strftime("%Y-%m-%d")
+            range_label = "14d"
+        elif triggered_id == "btn-30days":
+            start_date = (datetime.now() - timedelta(days=29)).strftime("%Y-%m-%d")
+            range_label = "30d"
         else:
-            start_date = (datetime.now() - timedelta(days=31)).strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=29)).strftime("%Y-%m-%d")
+            range_label = "30d"
         
-        return start_date, yesterday
+        return start_date, yesterday, range_label
+
+
+    @app.callback(
+        [Output("current-start-date", "data", allow_duplicate=True),
+         Output("current-end-date", "data", allow_duplicate=True),
+         Output("selected-range-label", "data", allow_duplicate=True)],
+        [Input("date-picker-start", "date"),
+         Input("date-picker-end", "date")],
+        prevent_initial_call=True
+    )
+    def update_custom_date_range(start_date, end_date):
+        """Update current dates when the custom picker changes."""
+        if not start_date or not end_date:
+            return "", "", "custom"
+        return str(start_date), str(end_date), "custom"
     
     
     @app.callback(
@@ -136,25 +200,33 @@ def register_callbacks(app):
     
     # ===== Rankings Update Callback =====
     @app.callback(
-        [Output("rankings-table-div", "children"),
+        [Output("rankings-summary", "children"),
+         Output("current-display-rows", "data"),
+         Output("ownership-filter", "options"),
+         Output("ownership-filter", "value"),
+         Output("mismatch-review", "children"),
          Output("refresh-timestamp", "children")],
-        [Input("league-dropdown", "value"),
-         Input("current-start-date", "data"),
-         Input("current-end-date", "data")],
-        State("current-weights", "data"),
-        prevent_initial_call=True
+        [Input("initial-load", "n_intervals"),
+         Input("btn-apply-filters", "n_clicks")],
+        [State("league-dropdown", "value"),
+         State("current-start-date", "data"),
+         State("current-end-date", "data"),
+         State("current-weights", "data"),
+         State("selected-range-label", "data")],
+        prevent_initial_call=False
     )
-    def update_rankings(league_id, start_date, end_date, weights):
-        """Fetch and display player rankings."""
+    def update_rankings(_, __, league_id, start_date, end_date, weights, range_label):
+        """Fetch rankings or preseason roster rows and update dashboard state."""
         
         if not league_id:
-            return "Select a league to view rankings", "Last updated: Never"
+            default_options = [{"label": "All Players", "value": "all"}]
+            return "Select a league to view rankings.", [], default_options, "all", "Mismatch review will appear here when needed.", "Last updated: Never"
         
         try:
             # Calculate days back
             if start_date and end_date:
                 days_back = (datetime.strptime(end_date, "%Y-%m-%d") - 
-                            datetime.strptime(start_date, "%Y-%m-%d")).days
+                            datetime.strptime(start_date, "%Y-%m-%d")).days + 1
             else:
                 days_back = 30
             
@@ -163,54 +235,122 @@ def register_callbacks(app):
                 f"http://localhost:8000/api/stats/{league_id}",
                 params={
                     "days_back": days_back,
-                    "weights": weights
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "include_windows": "true",
+                    "weights": json.dumps(weights)
                 }
             )
             
             if response.status_code == 200:
                 data = response.json()
-                rankings = data.get("rankings", [])
+                precomputed_windows = data.get("precomputed_windows", {})
+                rankings = precomputed_windows.get(range_label, data.get("rankings", [])) if range_label in {"7d", "14d", "30d"} and data.get("stats_available") else data.get("rankings", [])
                 updated_at = data.get("updated_at", datetime.now().isoformat())
-                
-                # Create table
-                if rankings:
-                    df = pd.DataFrame(rankings)
-                    
-                    # Import DataTable from Dash
-                    from dash import dash_table
-                    
-                    table = dash_table.DataTable(
-                        data=df.to_dict("records"),
-                        columns=[{"name": col, "id": col} for col in df.columns],
-                        style_cell={"textAlign": "left"},
-                        style_header={
-                            "backgroundColor": "rgb(230, 230, 230)",
-                            "fontWeight": "bold"
-                        },
-                        style_data_conditional=[
-                            {
-                                "if": {"row_index": "odd"},
-                                "backgroundColor": "rgb(248, 248, 248)"
-                            }
-                        ],
-                        sort_action="native",
-                        page_action="native",
-                        page_current=0,
-                        page_size=20
+                matched_count = data.get("matched_player_count", 0)
+                mismatch_count = data.get("mismatch_count", 0)
+                season_phase = data.get("season_phase", "unknown")
+                status_message = data.get("status_message", "")
+                summary = (
+                    f"{status_message} Range: {start_date or 'N/A'} to {end_date or 'N/A'} | "
+                    f"Matched players: {matched_count} | Mismatches: {mismatch_count} | Phase: {season_phase}"
+                )
+                filter_options = data.get("ownership_filter_options") or [{"label": "All Players", "value": "all"}]
+                mismatch_debug_path = data.get("mismatch_debug_path")
+                if mismatch_count > 0 and mismatch_debug_path:
+                    mismatch_review = html.A(
+                        f"Review {mismatch_count} unresolved player mappings",
+                        href=f"http://localhost:8000{mismatch_debug_path}",
+                        target="_blank",
                     )
-                    
-                    # Format timestamp
-                    try:
-                        dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-                        timestamp_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-                    except:
-                        timestamp_str = str(updated_at)
-                    
-                    return table, f"Last updated: {timestamp_str}"
                 else:
-                    return "No rankings available for this league", "Last updated: Never"
+                    mismatch_review = "No unresolved player mappings in the current dataset."
+
+                try:
+                    dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                    timestamp_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    timestamp_str = str(updated_at)
+                    
+                return summary, rankings, filter_options, "all", mismatch_review, f"Last updated: {timestamp_str}"
             else:
-                return f"Error loading rankings: {response.status_code}", "Last updated: Never"
+                default_options = [{"label": "All Players", "value": "all"}]
+                return "Unable to load rankings.", [], default_options, "all", "Mismatch review unavailable.", f"Error loading rankings: {response.status_code}"
         
         except Exception as e:
-            return f"Error: {str(e)}", "Last updated: Never"
+            default_options = [{"label": "All Players", "value": "all"}]
+            return "Unable to load rankings.", [], default_options, "all", "Mismatch review unavailable.", f"Error: {str(e)}"
+
+
+    @app.callback(
+        Output("rankings-table-div", "children"),
+        [Input("current-display-rows", "data"),
+         Input("ownership-filter", "value")],
+        prevent_initial_call=False
+    )
+    def render_rankings_table(rows, ownership_filter):
+        """Render the rankings or preseason roster table using the current ownership filter."""
+        if not rows:
+            return "No player rows available for the current selection."
+
+        filtered_rows = []
+        for row in rows:
+            fantasy_status = row.get("fantasy_status")
+            if ownership_filter == "all":
+                include_row = True
+            elif ownership_filter == "free_agents":
+                include_row = fantasy_status == "Free Agent"
+            elif ownership_filter == "waivers":
+                include_row = fantasy_status == "Waivers"
+            elif ownership_filter == "rostered":
+                include_row = fantasy_status not in {"Free Agent", "Waivers", None, ""}
+            else:
+                include_row = fantasy_status == ownership_filter
+
+            if include_row:
+                filtered_rows.append(row)
+
+        if not filtered_rows:
+            return "No players match the current filter."
+
+        df = pd.DataFrame(filtered_rows)
+        preferred_columns = [
+            "rank",
+            "player_name",
+            "fantasy_status",
+            "position",
+            "mlb_team",
+            "xwOBA",
+            "Pull Air %",
+            "BB:K",
+            "SB per PA",
+            "composite_score",
+            "data_status",
+            "match_status",
+            "review_reason",
+        ]
+        visible_columns = [column for column in preferred_columns if column in df.columns]
+        if visible_columns:
+            df = df[visible_columns]
+
+        from dash import dash_table
+
+        return dash_table.DataTable(
+            data=df.to_dict("records"),
+            columns=[{"name": col, "id": col} for col in df.columns],
+            style_cell={"textAlign": "left", "whiteSpace": "normal", "height": "auto"},
+            style_header={
+                "backgroundColor": "rgb(230, 230, 230)",
+                "fontWeight": "bold"
+            },
+            style_data_conditional=[
+                {
+                    "if": {"row_index": "odd"},
+                    "backgroundColor": "rgb(248, 248, 248)"
+                }
+            ],
+            sort_action="native",
+            page_action="native",
+            page_current=0,
+            page_size=20
+        )

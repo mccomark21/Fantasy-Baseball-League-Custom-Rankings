@@ -216,12 +216,20 @@ Reads environment variables from the project root `.env` file:
 | `/api/roster/{league_id}` | GET | Get league roster |
 | `/api/stats/{league_id}` | GET | Get stats + rankings |
 | `/api/debug/mismatches/{league_id}` | GET | Review unresolved Yahoo-to-MLB player matches |
+| `/api/sync/{league_id}` | POST | Backfill or refresh a season cache with a trailing correction window |
+| `/api/sync/{league_id}/development` | POST | Build a development-only season slice, typically from 2025 |
 | `/api/calculate-rankings` | POST | Calculate rankings from custom stats |
 | `/api/config` | GET | Get default config |
+
+**Background Work**:
+- Starts an APScheduler job on application startup
+- Nightly job discovers the authorized user's 2026 leagues and runs a trailing-window Savant refresh for each league
+- Manual sync endpoints remain available for first backfills and development slices
 
 ### 6. Testing And Support Utilities
 - `tests/test_yahoo_oauth.py`: Unit coverage for Yahoo XML parsing, token handling, and ownership parsing
 - `tests/test_league_data_integration.py`: Live Yahoo integration coverage with 2026 league discovery and player ownership samples
+- `tests/test_sync_service.py`: Unit coverage for season backfill and trailing correction-window refresh behavior
 - `tests/manual/oauth_smoke.py`: Manual credential and token-storage verification
 - `tests/manual/yahoo_league_runner.py`: Guided end-to-end Yahoo authorization and league/player sampling
 - `docs/YAHOO_OAUTH_SETUP.md` and `docs/yahoo-league-testing.md`: Setup and testing workflows
@@ -289,6 +297,34 @@ Reads environment variables from the project root `.env` file:
     "xwoba_contact_n": 3
   }
 ]
+```
+
+**`data/savant_daily_{league_id}_season_{season}.json`**
+```json
+[
+  {
+    "mlb_id": 545361,
+    "player_name": "Trout, Mike",
+    "date": "2026-04-17",
+    "plate_appearances": 5,
+    "walks": 1,
+    "strikeouts": 1,
+    "batted_ball_events": 3,
+    "air_balls": 2,
+    "pulled_air_balls": 1,
+    "xwoba_contact_sum": 1.245,
+    "xwoba_contact_n": 3
+  }
+]
+```
+
+**`data/savant_windows_{league_id}_season_{season}.json`**
+```json
+{
+  "7d": [],
+  "14d": [],
+  "30d": []
+}
 ```
 
 **`data/player_mismatches_{league_id}.json`**
@@ -359,6 +395,10 @@ Reads environment variables from the project root `.env` file:
 - Invalid date range: Return 500 with validation error details
 - No stats found: Return empty rankings
 - Server error: Return 500 with error message
+
+### Preseason Handling
+- If the current season has not reached the configured opening day and no Statcast rows exist yet, `/api/stats/{league_id}` returns a preseason payload.
+- The preseason payload includes roster-display rows, ownership filter options, mismatch review metadata, and a status message instead of pretending live rankings exist.
 
 ### Metrics Calculation
 - Missing metric: Skip player or use 0 Z-score
